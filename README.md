@@ -1,105 +1,72 @@
-# Projeto da cadeira Sistema de Apoio a decisão
+## Dashboard de análise no Power BI
 
-## Data Mart de preços de combustíveis
-
-
-Processo ETL em **Pentaho Data Integration (PDI)** que lê os arquivos de preços de
-combustíveis da **ANP**, faz limpeza, padronização e validação, e carrega um Data Mart
-dimensional no **PostgreSQL**, restrito ao estado de **Pernambuco** entre
-**01/01/2020 e 30/06/2026** (períodos 2020.1 a 2026.1).
+Depois que o Data Mart é carregado pelo ETL, o dashboard no **Power BI Desktop** lê o banco
+`dm_anp_pernambuco` e apresenta a **análise dos preços dos combustíveis no estado de Pernambuco**
+(períodos 2020.1 a 2026.1).
 
 ```text
-CSV bruto da ANP (semestral, nacional) → validação do layout → filtro PE → STAGING bruta → limpeza/validação
-→ STAGING limpa → dimensões → fato → controle da carga
-                         ↘ etl_rejeitados (nada é descartado em silêncio)
-```
-###### Fonte dos dados brutos: [Série Histórica de Preços de Combustíveis](https://www.gov.br/anp/pt-br/centrais-de-conteudo/dados-abertos/serie-historica-de-precos-de-combustiveis)
-
-**Estrutura do banco**
-
-```text
-                 dim_tempo (semestre: id_tempo = ano*10 + semestre)
-                         │
-dim_combustivel ── fato_preco_combustivel ── dim_local (posto + município/UF/estado/região)
-                         │
-                   dim_bandeira
+ANP (CSV) → Pentaho (ETL) → PostgreSQL (Data Mart) → Power BI (dashboard)
 ```
 
-## Passo a passo para executar
+Arquivos na pasta [`powerbi/`](powerbi/):
 
-**Subir o PostgresSQL**
-Na pasta do projeto (onde está o `docker-compose.yml`):
+- `consulta OLAP.pbix`: relatório completo (modelo, medidas e visuais)
+- `consulta OLAP.pbit`: modelo do relatório, sem os dados
+- imagens e PDF do dashboard
 
-No terminal bash digite:
+### Conexão e modelo
 
-```bash
-docker compose up -d
+- Fonte: **PostgreSQL**, servidor `localhost`, banco `dm_anp_pernambuco` (container do `docker-compose.yml`).
+- Modo de importação das tabelas do Data Mart.
+- Relacionamentos (esquema estrela, um-para-muitos, direção única):
+
+| Fato                          | Dimensão          | Chave            |
+|-------------------------------|-------------------|------------------|
+| `fato_preco_combustivel`      | `dim_tempo`       | `id_tempo`       |
+| `fato_preco_combustivel`      | `dim_local`       | `id_local`       |
+| `fato_preco_combustivel`      | `dim_combustivel` | `id_combustivel` |
+| `fato_preco_combustivel`      | `dim_bandeira`    | `id_bandeira`    |
+
+### Medidas (DAX)
+
+```dax
+Preco Medio Venda = AVERAGE('public fato_preco_combustivel'[valor_venda])
+Maior Preco       = MAX('public fato_preco_combustivel'[valor_venda])
+Menor Preco       = MIN('public fato_preco_combustivel'[valor_venda])
+
+Variacao Preco % =
+VAR AnoAtual = MAX('public dim_tempo'[ano])
+VAR PrecoAtual = [Preco Medio Venda]
+VAR PrecoAnterior =
+    CALCULATE(
+        [Preco Medio Venda],
+        REMOVEFILTERS('public dim_tempo'),
+        'public dim_tempo'[ano] = AnoAtual - 1
+    )
+RETURN
+    IF(ISBLANK(PrecoAnterior), BLANK(),
+       DIVIDE(PrecoAtual - PrecoAnterior, PrecoAnterior))
 ```
 
-Foi utilizado o Docker para criar um container para o banco de dados Postgres, para ter uma melhor organização do projeto,
-abaixo irei mostra alguns comandos para a criação do database e das tabelas desse projeto.
+A variação percentual compara o preço médio do ano selecionado com o do ano anterior.
 
-```bash
-# 1) banco (conectado ao banco postgres) 
-docker exec -i dw_combustiveis psql -U postgres -d postgres          < sql/01_create_database.sql
-# 2) a 5) tabelas e índices (conectado ao novo banco)
-docker exec -i dw_combustiveis psql -U postgres -d dm_anp_pernambuco < sql/02_create_staging.sql
-docker exec -i dw_combustiveis psql -U postgres -d dm_anp_pernambuco < sql/03_create_dimensions.sql
-docker exec -i dw_combustiveis psql -U postgres -d dm_anp_pernambuco < sql/04_create_fact.sql
-docker exec -i dw_combustiveis psql -U postgres -d dm_anp_pernambuco < sql/05_indexes.sql
+### Visuais e filtros
 
-```
-Veja os arquivos na pasta:
+- **Segmentações:** ano, município e combustível/produto.
+- **Cartões:** maior preço, menor preço, preço médio e variação percentual.
+- **Gráficos:** preço médio ao longo do tempo, preço médio por combustível,
+  preço mínimo e máximo por bandeira e preço médio por município.
 
-- [01_create_database.sql](ETL/sql/01_create_database.sql)
+### Como abrir o dashboard
 
-- [02_create_staging.sql](ETL/sql/02_create_staging.sql)
+1. Suba o banco e execute o ETL conforme o passo a passo acima.
+2. Abra `powerbi/consulta OLAP.pbix` no Power BI Desktop.
+3. Se pedir, informe o servidor (`localhost`), o banco (`dm_anp_pernambuco`) e o usuário e senha definidos no `docker-compose.yml`.
+4. Clique em **Atualizar** na Página Inicial.
 
-- [03_create_dimensions.sql](ETL/sql/03_create_dimensions.sql)
+### Autoria
 
-- [04_create_fact.sql](ETL/sql/04_create_fact.sql)
-
-- [05_indexes.sql](ETL/sql/05_indexes.sql)
-
-### Plano de Carga ELT:
-
-<div align="center">
-
-00_ETLANP_DataMart.ktr
-
-<img alt="GitHub language count" src=https://github.com/RodrigoSantos359/Projeto-SAD/blob/main/ETL/prints/00_ETL_ANP_DataMart.png width="420px">
-
-
-00_Validar_Layout.ktr
-
-<img alt="GitHub language count" src=https://github.com/RodrigoSantos359/Projeto-SAD/blob/main/ETL/prints/00_Validar_layout.png width="420px">
-
-01_Carga_Staging.ktr
-
-<img alt="GitHub language count" src=https://github.com/RodrigoSantos359/Projeto-SAD/blob/main/ETL/prints/01_Carga_Staging.png width="420px">
-
-02_Limpeza_Dados.ktr
-
-<img alt="GitHub language count" src=https://github.com/RodrigoSantos359/Projeto-SAD/blob/main/ETL/prints/02_Limpeza_Dados.png width="420px">
-
-03_Dim_Tempo.ktr
-
-<img alt="GitHub language count" src=https://github.com/RodrigoSantos359/Projeto-SAD/blob/main/ETL/prints/03_Dim_Tempo.png width="420px">
-
-04_Dim_Combustivel.ktr
-
-<img alt="GitHub language count" src=https://github.com/RodrigoSantos359/Projeto-SAD/blob/main/ETL/prints/04_Dim_Combustivel.png width="420px">
-
-05_Dim_Local.ktr
-
-<img alt="GitHub language count" src=https://github.com/RodrigoSantos359/Projeto-SAD/blob/main/ETL/prints/05_Dim_Local.png width="420px">
-
-06_Dim_Bandeira.ktr
-
-<img alt="GitHub language count" src=https://github.com/RodrigoSantos359/Projeto-SAD/blob/main/ETL/prints/06_Dim_Bandeira.png width="420px">
-
-07_Carga_Fato_Preco
-
-<img alt="GitHub language count" src=https://github.com/RodrigoSantos359/Projeto-SAD/blob/main/ETL/prints/07_Carga_Fato_Preco.png width="420px">
-
-</div>
+| Parte                                          | Responsável                     |
+|------------------------------------------------|---------------------------------|
+| ETL no Pentaho e Data Mart no PostgreSQL       | Rodrigo Santos                  |
+| Modelagem no Power BI, medidas DAX e dashboard | Samara Lima   |
